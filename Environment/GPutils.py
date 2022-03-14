@@ -6,11 +6,11 @@ from utils import print_log, message_log
 
 class ExactGPModel(gpytorch.models.ExactGP):
     """ Exact model gaussian regressor with RBF Kernel """
-    def __init__(self, train_x, train_y, likelihood):
+    def __init__(self, train_x, train_y, likelihood, lengthscale):
         super(ExactGPModel, self).__init__(train_x, train_y, likelihood)
         self.mean_module = gpytorch.means.ConstantMean()
         self.covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.RBFKernel())
-        self.covar_module.base_kernel.lengthscale = 10
+        self.covar_module.base_kernel.lengthscale = lengthscale
 
     def forward(self, x):
         mean_x = self.mean_module(x)
@@ -21,7 +21,7 @@ class ExactGPModel(gpytorch.models.ExactGP):
 class GaussianProcessRegressorPytorch:
     """ GP Regressor wrapper for train and evaluate """
 
-    def __init__(self, training_iter=10, device = None):
+    def __init__(self, training_iter=10, device = None, lengthscale = 10):
 
         if device is None:
             self.device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
@@ -32,11 +32,11 @@ class GaussianProcessRegressorPytorch:
 
         self.y_train = None
         self.x_train = None
-        #self.likelihood = gpytorch.likelihoods.FixedNoiseGaussianLikelihood(noise = torch.ones(1)*1E-6)
         self.likelihood = gpytorch.likelihoods.GaussianLikelihood(noise=1E-5)
         self.GPmodel = ExactGPModel(train_x=self.x_train,
                                     train_y=self.y_train,
-                                    likelihood=self.likelihood).to(self.device)
+                                    likelihood=self.likelihood,
+                                    lengthscale=lengthscale).to(self.device)
         self.optimizer = torch.optim.Adam(params=self.GPmodel.parameters(), lr=0.1)
         # LogLikelihood
         self.mll = gpytorch.mlls.ExactMarginalLogLikelihood(self.likelihood, self.GPmodel)
@@ -46,11 +46,10 @@ class GaussianProcessRegressorPytorch:
 
     def fit(self, x, y):
 
-        self.x_train = torch.tensor(x, device=self.device)
-        self.y_train = torch.tensor(y, device=self.device)
+        self.x_train = torch.tensor(x, device=self.device, dtype=torch.float)
+        self.y_train = torch.tensor(y, device=self.device, dtype=torch.float)
 
         self.GPmodel.set_train_data(inputs=self.x_train, targets=self.y_train, strict=False)
-        #self.likelihood.noise_covar.initialize(noise=torch.ones(self.y_train.shape) * 1E-8)
 
         # Train mode
         self.GPmodel.train()
@@ -78,7 +77,7 @@ class GaussianProcessRegressorPytorch:
         self.GPmodel.eval()
         self.likelihood.eval()
 
-        x_eval_tensor = torch.tensor(x_eval, device=self.device)
+        x_eval_tensor = torch.tensor(x_eval, device=self.device, dtype=torch.float)
 
         # Fast prediction
         with torch.no_grad(), gpytorch.settings.fast_pred_var():
