@@ -184,13 +184,14 @@ class DiscreteFleet:
 
 class GPMultiAgent(gym.Env):
 
-    def __init__(self, navigation_map, number_of_agents, initial_positions, movement_length, distance_budget, initial_meas_locs, device =None):
+    def __init__(self, navigation_map, number_of_agents, initial_positions, movement_length, distance_budget, initial_meas_locs, max_number_of_collisions = 5, device =None):
 
         self.navigation_map = navigation_map
         self.visitable_positions = np.column_stack(np.where(navigation_map == 1)).astype(float)
         self.number_of_agents = number_of_agents
         self.initial_positions = initial_positions
         self.distance_budget = distance_budget
+        self.max_number_of_collisions = max_number_of_collisions
 
         self.observation_space = gym.spaces.Box(0.0,1.0, shape= (3 + self.number_of_agents, self.navigation_map.shape[0], self.navigation_map.shape[1]))
         self.action_space = gym.spaces.Discrete(8)
@@ -234,32 +235,36 @@ class GPMultiAgent(gym.Env):
         # Process movements #
         collision_array = self.fleet.move(action)
 
-        self.measured_values, self.measured_locations = self.fleet.measure(gt=self.gt)
-        # Predict the new model #
-        self.GPR.fit(self.measured_locations, self.measured_values)
-        mu, lower_confidence, upper_confidence = self.GPR.predict(self.visitable_positions)
-        # Reshape #
-        self.mu = np.zeros_like(self.navigation_map)
-        self.mu[self.visitable_positions[:,0].astype(int), self.visitable_positions[:,1].astype(int)] = mu.cpu().numpy()
+        if all(not collision_array):
 
-        self.uncertainty = np.zeros_like(self.navigation_map)
-        lower_confidence = lower_confidence.cpu().numpy()
-        upper_confidence = upper_confidence.cpu().numpy()
 
-        self.uncertainty[self.visitable_positions[:,0].astype(int), self.visitable_positions[:,1].astype(int)] = upper_confidence - lower_confidence
+            self.measured_values, self.measured_locations = self.fleet.measure(gt=self.gt)
+            # Predict the new model #
+            self.GPR.fit(self.measured_locations, self.measured_values)
+            mu, lower_confidence, upper_confidence = self.GPR.predict(self.visitable_positions)
+            # Reshape #
+            self.mu = np.zeros_like(self.navigation_map)
+            self.mu[self.visitable_positions[:,0].astype(int), self.visitable_positions[:,1].astype(int)] = mu.cpu().numpy()
 
-        normalized_gt = (self.gt.GroundTruth_field - self.gt.GroundTruth_field.mean())/(self.gt.GroundTruth_field.std() + 1E-8)
-        normalized_predicted_gt = (mu.cpu().numpy() - self.gt.GroundTruth_field.mean())/(self.gt.GroundTruth_field.std() + 1E-8)
-        mse = MSE(y_true = normalized_gt, y_pred=normalized_predicted_gt)
+            self.uncertainty = np.zeros_like(self.navigation_map)
+            lower_confidence = lower_confidence.cpu().numpy()
+            upper_confidence = upper_confidence.cpu().numpy()
 
-        # Compute reward #
-        rewards = [-10 if collision_array[i] == 1 else -mse for i in range(self.number_of_agents)]
+            self.uncertainty[self.visitable_positions[:,0].astype(int), self.visitable_positions[:,1].astype(int)] = upper_confidence - lower_confidence
+
+            normalized_gt = (self.gt.GroundTruth_field - self.gt.GroundTruth_field.mean())/(self.gt.GroundTruth_field.std() + 1E-8)
+            normalized_predicted_gt = (mu.cpu().numpy() - self.gt.GroundTruth_field.mean())/(self.gt.GroundTruth_field.std() + 1E-8)
+            mse = MSE(y_true = normalized_gt, y_pred=normalized_predicted_gt)
+            reward = -mse
+
+        else:
+            reward = -5
 
         self.state = self.render_state()
 
-        done = np.mean(self.fleet.get_distances()) > self.distance_budget
+        done = np.mean(self.fleet.get_distances()) > self.distance_budget or self.fleet.fleet_collisions > self.max_number_of_collisions
 
-        return self.state, np.sum(rewards), done, {}
+        return self.state, reward, done, {}
 
     def reset(self):
         """Resets the environment to an initial state and returns an initial
