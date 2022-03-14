@@ -235,7 +235,7 @@ class GPMultiAgent(gym.Env):
         # Process movements #
         collision_array = self.fleet.move(action)
 
-        if all(not collision_array):
+        if not all(collision_array):
 
 
             self.measured_values, self.measured_locations = self.fleet.measure(gt=self.gt)
@@ -347,7 +347,7 @@ class GPMultiAgent(gym.Env):
             plt.ion()
             self.fig, self.axs = plt.subplots(1, 4)
 
-            self.d0 = self.axs[0].imshow(self.state[:,:,0], cmap='gray_r')
+            self.d0 = self.axs[0].imshow(self.state[0,:,:], cmap='gray_r')
             positions = self.fleet.get_positions()
             positions[:, 0], positions[:, 1] = positions[:, 1], positions[:, 0].copy()
             self.d1 = self.axs[0].scatter(positions[:,1], positions[:,0])
@@ -355,10 +355,10 @@ class GPMultiAgent(gym.Env):
             true_map = np.zeros_like(self.navigation_map) * np.nan
             true_map[self.visitable_positions[:,0].astype(int), self.visitable_positions[:,1].astype(int)] = self.gt.GroundTruth_field
             self.d3 = self.axs[2].imshow(true_map, cmap='jet', vmin=self.gt.GroundTruth_field.min(), vmax = self.gt.GroundTruth_field.max())
-            self.d4 = self.axs[3].imshow(self.state[:,:,-1], cmap = 'viridis')
+            self.d4 = self.axs[3].imshow(self.state[-1,:,:], cmap = 'viridis')
 
         else:
-            self.d0.set_data(self.state[:,:,0])
+            self.d0.set_data(self.state[0,:,:])
             positions = self.fleet.get_positions()
             positions[:,0], positions[:,1] = positions[:,1], positions[:,0].copy()
             self.d1.set_offsets(positions)
@@ -366,7 +366,7 @@ class GPMultiAgent(gym.Env):
             true_map = np.zeros_like(self.navigation_map) * np.nan
             true_map[self.visitable_positions[:, 0].astype(int), self.visitable_positions[:, 1].astype(int)] = self.gt.GroundTruth_field
             self.d3.set_data(true_map)
-            self.d4.set_data(self.state[:,:,-1])
+            self.d4.set_data(self.state[-1,:,:])
 
         self.fig.canvas.draw()
         plt.pause(0.1)
@@ -396,7 +396,7 @@ if __name__ == '__main__':
                        number_of_agents=n_agents,
                        initial_positions=init_pos,
                        initial_meas_locs=initial_meas_locs,
-                       distance_budget=400,
+                       distance_budget=200,
                        device='cpu')
 
     env.seed(20)
