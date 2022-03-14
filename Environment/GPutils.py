@@ -21,9 +21,13 @@ class ExactGPModel(gpytorch.models.ExactGP):
 class GaussianProcessRegressorPytorch:
     """ GP Regressor wrapper for train and evaluate """
 
-    def __init__(self, training_iter=10):
+    def __init__(self, training_iter=10, device = None):
 
-        self.device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
+        if device is None:
+            self.device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
+        else:
+            self.device = device
+
         print(f'WARNING: Using {self.device} for GP Regression')
 
         self.y_train = None

@@ -184,7 +184,7 @@ class DiscreteFleet:
 
 class GPMultiAgent(gym.Env):
 
-    def __init__(self, navigation_map, number_of_agents, initial_positions, movement_length, distance_budget, initial_meas_locs):
+    def __init__(self, navigation_map, number_of_agents, initial_positions, movement_length, distance_budget, initial_meas_locs, device =None):
 
         self.navigation_map = navigation_map
         self.visitable_positions = np.column_stack(np.where(navigation_map == 1)).astype(float)
@@ -206,7 +206,7 @@ class GPMultiAgent(gym.Env):
         self.mu = None
         self.lower_confidence = None
         self.upper_confidence = None
-        self.GPR = GaussianProcessRegressorPytorch(training_iter=100)
+        self.GPR = GaussianProcessRegressorPytorch(training_iter=100, device=device)
         self.fig = None
 
         self.gt = ShekelGT(self.navigation_map.shape, self.visitable_positions)
@@ -362,7 +362,10 @@ if __name__ == '__main__':
     nav = np.ones((100,100))
     n_agents = 1
     init_pos = np.random.rand(n_agents, 2) * 100
-    initial_meas_locs = np.vstack((init_pos + [0,5], init_pos + [0,-5], init_pos + [5,0],init_pos + [-5,0]))
+    initial_meas_locs = np.vstack((init_pos + [0,5],
+                                   init_pos + [0,-5],
+                                   init_pos + [5,0],
+                                   init_pos + [-5,0]))
 
 
     env = GPMultiAgent(navigation_map=nav,
@@ -370,7 +373,8 @@ if __name__ == '__main__':
                        number_of_agents=n_agents,
                        initial_positions=init_pos,
                        initial_meas_locs=initial_meas_locs,
-                       distance_budget=400)
+                       distance_budget=400,
+                       device='cpu')
 
     env.seed(42)
 
@@ -395,7 +399,7 @@ if __name__ == '__main__':
                 while any(env.fleet.check_collisions(action)):
                     action = np.random.randint(0, 8, n_agents)
 
-            #print("Reward: ", r)
+            print("Reward: ", r)
             #env.render()
 
     print("Tiempo medio por iteracion: ", (time.time() - t0)/T)
