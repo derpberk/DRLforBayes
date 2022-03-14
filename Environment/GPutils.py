@@ -28,11 +28,12 @@ class GaussianProcessRegressorPytorch:
 
         self.y_train = None
         self.x_train = None
-        self.likelihood = gpytorch.likelihoods.GaussianLikelihood()
+        #self.likelihood = gpytorch.likelihoods.FixedNoiseGaussianLikelihood(noise = torch.ones(1)*1E-6)
+        self.likelihood = gpytorch.likelihoods.GaussianLikelihood(noise=1E-5)
         self.GPmodel = ExactGPModel(train_x=self.x_train,
                                     train_y=self.y_train,
                                     likelihood=self.likelihood).to(self.device)
-        self.optimizer = torch.optim.Adam(params=self.GPmodel.parameters(), lr=0.5)
+        self.optimizer = torch.optim.Adam(params=self.GPmodel.parameters(), lr=0.1)
         # LogLikelihood
         self.mll = gpytorch.mlls.ExactMarginalLogLikelihood(self.likelihood, self.GPmodel)
         self.training_iter = training_iter
@@ -45,6 +46,7 @@ class GaussianProcessRegressorPytorch:
         self.y_train = torch.tensor(y, device=self.device)
 
         self.GPmodel.set_train_data(inputs=self.x_train, targets=self.y_train, strict=False)
+        #self.likelihood.noise_covar.initialize(noise=torch.ones(self.y_train.shape) * 1E-8)
 
         # Train mode
         self.GPmodel.train()

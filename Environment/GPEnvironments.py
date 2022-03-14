@@ -1,5 +1,4 @@
 import gym
-import matplotlib.pyplot as plt
 import numpy as np
 from GPutils import GaussianProcessRegressorPytorch
 from sklearn.metrics import mean_squared_error as MSE
@@ -41,8 +40,12 @@ class DiscreteVehicle:
 
     def check_collision(self, next_position):
 
-        if self.navigation_map[int(next_position[0]), int(next_position[1])] == 0:
+        if any(next_position > np.array(self.navigation_map.shape)-1) or any(next_position < 0):
             return True
+
+        elif self.navigation_map[int(next_position[0]), int(next_position[1])] == 0:
+            return True
+
         return False
 
 
@@ -115,14 +118,18 @@ class DiscreteFleet:
 
         return collision_array
 
-    def measure(self, gt):
+    def measure(self, gt, extra_positions = None):
 
         """
         Take a measurement in the given N positions
         :param gt_field:
         :return: An numpy array with dims (N,2)
         """
-        positions = np.array([self.vehicles[k].position for k in range(self.number_of_vehicles)])
+
+        if extra_positions is not None:
+            positions = extra_positions
+        else:
+            positions = np.array([self.vehicles[k].position for k in range(self.number_of_vehicles)])
 
         values = []
         for pos in positions:
@@ -134,6 +141,11 @@ class DiscreteFleet:
         else:
             self.measured_locations = np.vstack((self.measured_locations, positions))
             self.measured_values = np.hstack((self.measured_values, values))
+
+        # Check only non redundant values #
+        non_redundant_locs, non_redundant_idxs = np.unique(self.measured_locations, axis=0, return_index=True)
+        self.measured_values = np.asarray(self.measured_values)[non_redundant_idxs]
+        self.measured_locations = non_redundant_locs
 
         return self.measured_values, self.measured_locations
 
@@ -149,6 +161,12 @@ class DiscreteFleet:
     def get_distances(self):
 
         return [self.vehicles[k].distance for k in range(self.number_of_vehicles)]
+
+    def get_positions(self):
+
+        positions = [self.vehicles[i].position for i in range(self.number_of_vehicles)]
+
+        return np.asarray(positions)
 
     def check_collisions(self, test_actions):
 
@@ -166,13 +184,16 @@ class DiscreteFleet:
 
 class GPMultiAgent(gym.Env):
 
-    def __init__(self, navigation_map, number_of_agents, initial_positions, movement_length, distance_budget):
+    def __init__(self, navigation_map, number_of_agents, initial_positions, movement_length, distance_budget, initial_meas_locs):
 
         self.navigation_map = navigation_map
-        self.visitable_positions = np.column_stack(np.where(navigation_map == 1))
+        self.visitable_positions = np.column_stack(np.where(navigation_map == 1)).astype(float)
         self.number_of_agents = number_of_agents
         self.initial_positions = initial_positions
         self.distance_budget = distance_budget
+
+        self.state = None
+        self.initial_meas_locs = initial_meas_locs
 
         self.fleet = DiscreteFleet(number_of_vehicles=number_of_agents,
                                    n_actions=8,
@@ -186,11 +207,9 @@ class GPMultiAgent(gym.Env):
         self.lower_confidence = None
         self.upper_confidence = None
         self.GPR = GaussianProcessRegressorPytorch(training_iter=100)
+        self.fig = None
 
         self.gt = ShekelGT(self.navigation_map.shape, self.visitable_positions)
-
-
-
 
     def step(self, action):
         """Run one timestep of the environment's dynamics. When end of
@@ -221,17 +240,18 @@ class GPMultiAgent(gym.Env):
         self.lower_confidence = lower_confidence.cpu().numpy().reshape(self.navigation_map.shape)
         self.upper_confidence = upper_confidence.cpu().numpy().reshape(self.navigation_map.shape)
 
-        mse = MSE(y_true = self.gt.GroundTruth_field, y_pred=mu.cpu().numpy())
+        normalized_gt = (self.gt.GroundTruth_field - self.gt.GroundTruth_field.mean())/(self.gt.GroundTruth_field.std() + 1E-8)
+        normalized_predicted_gt = (mu.cpu().numpy() - self.gt.GroundTruth_field.mean())/(self.gt.GroundTruth_field.std() + 1E-8)
+        mse = MSE(y_true = normalized_gt, y_pred=normalized_predicted_gt)
 
         # Compute reward #
-        rewards = [-10 if collision_array[i] == 1 else mse for i in range(self.number_of_agents)]
+        rewards = [-10 if collision_array[i] == 1 else -mse for i in range(self.number_of_agents)]
 
-        state = self.render_state()
+        self.state = self.render_state()
 
         done = np.mean(self.fleet.get_distances()) > self.distance_budget
 
-        return state, rewards, False, {}
-
+        return self.state, rewards, done, {}
 
     def reset(self):
         """Resets the environment to an initial state and returns an initial
@@ -254,6 +274,10 @@ class GPMultiAgent(gym.Env):
 
         # Take measurements
         self.measured_values, self.measured_locations = self.fleet.measure(gt=self.gt)
+
+        if self.initial_meas_locs is not None:
+            self.fleet.measure(gt=self.gt, extra_positions = self.initial_meas_locs)
+
         # Predict the new model #
         self.GPR.fit(self.measured_locations, self.measured_values)
         mu, lower_confidence, upper_confidence = self.GPR.predict(self.visitable_positions)
@@ -262,102 +286,116 @@ class GPMultiAgent(gym.Env):
         self.lower_confidence = lower_confidence.cpu().numpy().reshape(self.navigation_map.shape)
         self.upper_confidence = upper_confidence.cpu().numpy().reshape(self.navigation_map.shape)
 
-        state = self.render_state()
+        self.state = self.render_state()
 
-        return state
-
+        return self.state
 
     def render_state(self):
 
         nav_map = np.copy(self.navigation_map)
-        mean = np.copy(self.mu)
-        uncertainty = self.upper_confidence - self.lower_confidence
+        positions_map = np.zeros(shape=(self.navigation_map.shape[0], self.navigation_map.shape[1], self.number_of_agents))
 
-        return np.dstack((nav_map, mean, uncertainty))
+        for i in range(self.number_of_agents):
+            positions_map[self.fleet.vehicles[i].position[0].astype(int),
+                          self.fleet.vehicles[i].position[1].astype(int),
+                          i] = 1
+
+        mean = (self.mu - self.mu.min()) / (self.mu.max() - self.mu.min() + 1E-8)
+        uncertainty = self.upper_confidence - self.lower_confidence
+        uncertainty = (uncertainty - uncertainty.min()) / (uncertainty.max() - uncertainty.min() + 1E-8)
+
+        return np.dstack((nav_map, positions_map, mean, uncertainty))
 
     def render(self, mode='human'):
-            """Renders the environment.
 
-            The set of supported modes varies per environment. (And some
-            environments do not support rendering at all.) By convention,
-            if mode is:
+        import matplotlib.pyplot as plt
 
-            - human: render to the current display or terminal and
-              return nothing. Usually for human consumption.
-            - rgb_array: Return an numpy.ndarray with shape (x, y, 3),
-              representing RGB values for an x-by-y pixel image, suitable
-              for turning into a video.
-            - ansi: Return a string (str) or StringIO.StringIO containing a
-              terminal-style text representation. The text can include newlines
-              and ANSI escape sequences (e.g. for colors).
+        """Renders the environment.
 
-            Note:
-                Make sure that your class's metadata 'render.modes' key includes
-                  the list of supported modes. It's recommended to call super()
-                  in implementations to use the functionality of this method.
+        The set of supported modes varies per environment. (And some
+        environments do not support rendering at all.) By convention,
+        if mode is:
 
-            Args:
-                mode (str): the mode to render with
-
-            Example:
-
-            class MyEnv(Env):
-                metadata = {'render.modes': ['human', 'rgb_array']}
-
-                def render(self, mode='human'):
-                    if mode == 'rgb_array':
-                        return np.array(...) # return RGB frame suitable for video
-                    elif mode == 'human':
-                        ... # pop up a window and render
-                    else:
-                        super(MyEnv, self).render(mode=mode) # just raise an exception
-            """
-            raise NotImplementedError
-
-    def close(self):
-        """Override close in your subclass to perform any necessary cleanup.
-
-        Environments will automatically close() themselves when
-        garbage collected or when the program exits.
+        - human: render to the current display or terminal and
+          return nothing. Usually for human consumption.
+        - rgb_array: Return an numpy.ndarray with shape (x, y, 3),
+          representing RGB values for an x-by-y pixel image, suitable
+          for turning into a video.
+        - ansi: Return a string (str) or StringIO.StringIO containing a
+          terminal-style text representation. The text can include newlines
+          and ANSI escape sequences (e.g. for colors).
         """
-        pass
+
+        if self.fig is None:
+            plt.ion()
+            self.fig, self.axs = plt.subplots(1, 3)
+
+            self.d0 = self.axs[0].imshow(self.state[:,:,0], cmap='gray_r')
+            positions = self.fleet.get_positions()
+            positions[:, 0], positions[:, 1] = positions[:, 1], positions[:, 0].copy()
+            self.d1 = self.axs[0].scatter(positions[:,1], positions[:,0])
+            self.d2 = self.axs[1].imshow(self.state[:,:,-2], cmap = 'jet')
+            self.d3 = self.axs[2].imshow(self.state[:,:,-1], cmap = 'viridis')
+
+        else:
+            self.d0.set_data(self.state[:,:,0])
+            positions = self.fleet.get_positions()
+            positions[:,0], positions[:,1] = positions[:,1], positions[:,0].copy()
+            self.d1.set_offsets(positions)
+            self.d2.set_data(self.state[:,:,-2])
+            self.d3.set_data(self.state[:,:,-1])
+
+        self.fig.canvas.draw()
+        plt.pause(0.1)
 
     def seed(self, seed=None):
-        """Sets the seed for this env's random number generator(s).
 
-        Note:
-            Some environments use multiple pseudorandom number generators.
-            We want to capture all such seeds used in order to ensure that
-            there aren't accidental correlations between multiple generators.
+        np.random.seed(seed)
 
-        Returns:
-            list<bigint>: Returns the list of seeds used in this env's random
-              number generators. The first value in the list should be the
-              "main" seed, or the value which a reproducer should pass to
-              'seed'. Often, the main seed equals the provided 'seed', but
-              this won't be true if seed=None, for example.
-        """
         return
 
 
 if __name__ == '__main__':
 
+    import time
+
     nav = np.ones((100,100))
-    init_pos = np.random.rand(2,2) * 100
+    n_agents = 1
+    init_pos = np.random.rand(n_agents, 2) * 100
+    initial_meas_locs = np.vstack((init_pos + [0,5], init_pos + [0,-5], init_pos + [5,0],init_pos + [-5,0]))
+
+
     env = GPMultiAgent(navigation_map=nav,
                        movement_length=6,
-                       number_of_agents=2,
+                       number_of_agents=n_agents,
                        initial_positions=init_pos,
-                       distance_budget=200)
+                       initial_meas_locs=initial_meas_locs,
+                       distance_budget=400)
 
-    s = env.reset()
+    env.seed(42)
 
-    while True:
+    T = 20
+    t0 = time.time()
+    for t in range(T):
 
-        s,r,d,_ = env.step(np.random.randint(0,8,2))
+        print("Run ", t)
+        s = env.reset()
+        d = False
 
-        print("Reward: ", r)
-        plt.imshow((s[:,:,1] - env.gt.GroundTruth_field.reshape()))
-        plt.plot(env.fleet.vehicles[0].position[1],env.fleet.vehicles[0].position[0], 'xb')
-        plt.plot(env.fleet.vehicles[1].position[1],env.fleet.vehicles[1].position[0], 'xr')
-        plt.pause(0.5)
+        action = np.random.randint(0,8,n_agents)
+        while any(env.fleet.check_collisions(action)):
+            action = np.random.randint(0,8,n_agents)
+
+        while not d:
+
+            s, r, d, _ = env.step(action)
+
+            if any(env.fleet.check_collisions(action)):
+                action = np.random.randint(0, 8, n_agents)
+                while any(env.fleet.check_collisions(action)):
+                    action = np.random.randint(0, 8, n_agents)
+
+            #print("Reward: ", r)
+            #env.render()
+
+    print("Tiempo medio por iteracion: ", (time.time() - t0)/T)
