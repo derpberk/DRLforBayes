@@ -15,7 +15,7 @@ test_y = np.sin(test_x ** 2)
 # Initialize plot
 f, ax = plt.subplots(1, 1, figsize=(4, 3))
 
-model = GaussianProcessRegressorPytorch(training_iter=20, device='cpu', lengthscale=0.1)
+model = GaussianProcessRegressorPytorch(training_iter=20, device='cpu', lengthscale=0.001)
 
 model.fit(train_x, train_y)
 

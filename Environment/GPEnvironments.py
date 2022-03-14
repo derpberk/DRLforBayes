@@ -1,8 +1,8 @@
 import gym
 import numpy as np
-from GPutils import GaussianProcessRegressorPytorch
+from Environment.GPutils import GaussianProcessRegressorPytorch
 from sklearn.metrics import mean_squared_error as MSE
-from GroundTruths import ShekelGT
+from Environment.GroundTruths import ShekelGT
 
 class DiscreteVehicle:
 
@@ -92,7 +92,6 @@ class DiscreteVehicle:
         """ Update the position """
         self.position = goal_position
 
-
 class DiscreteFleet:
 
     def __init__(self, number_of_vehicles, n_actions, initial_positions, movement_length, navigation_map):
@@ -111,6 +110,8 @@ class DiscreteFleet:
         self.fleet_collisions = 0
 
     def move(self, fleet_actions):
+
+        fleet_actions = np.array([fleet_actions.item()])
 
         collision_array = [self.vehicles[k].move(fleet_actions[k]) for k in range(self.number_of_vehicles)]
 
@@ -181,7 +182,6 @@ class DiscreteFleet:
         for k in range(self.number_of_vehicles):
             self.vehicles[k].move_to_position(goal_position=goal_list[k])
 
-
 class GPMultiAgent(gym.Env):
 
     def __init__(self, navigation_map, number_of_agents, initial_positions, movement_length, distance_budget, initial_meas_locs, device =None):
@@ -191,6 +191,9 @@ class GPMultiAgent(gym.Env):
         self.number_of_agents = number_of_agents
         self.initial_positions = initial_positions
         self.distance_budget = distance_budget
+
+        self.observation_space = gym.spaces.Box(0.0,1.0, shape= (3 + self.number_of_agents, self.navigation_map.shape[0], self.navigation_map.shape[1]))
+        self.action_space = gym.spaces.Discrete(8)
 
         self.state = None
         self.initial_meas_locs = initial_meas_locs
@@ -236,9 +239,14 @@ class GPMultiAgent(gym.Env):
         self.GPR.fit(self.measured_locations, self.measured_values)
         mu, lower_confidence, upper_confidence = self.GPR.predict(self.visitable_positions)
         # Reshape #
-        self.mu = mu.cpu().numpy().reshape(self.navigation_map.shape)
-        self.lower_confidence = lower_confidence.cpu().numpy().reshape(self.navigation_map.shape)
-        self.upper_confidence = upper_confidence.cpu().numpy().reshape(self.navigation_map.shape)
+        self.mu = np.zeros_like(self.navigation_map)
+        self.mu[self.visitable_positions[:,0].astype(int), self.visitable_positions[:,1].astype(int)] = mu.cpu().numpy()
+
+        self.uncertainty = np.zeros_like(self.navigation_map)
+        lower_confidence = lower_confidence.cpu().numpy()
+        upper_confidence = upper_confidence.cpu().numpy()
+
+        self.uncertainty[self.visitable_positions[:,0].astype(int), self.visitable_positions[:,1].astype(int)] = upper_confidence - lower_confidence
 
         normalized_gt = (self.gt.GroundTruth_field - self.gt.GroundTruth_field.mean())/(self.gt.GroundTruth_field.std() + 1E-8)
         normalized_predicted_gt = (mu.cpu().numpy() - self.gt.GroundTruth_field.mean())/(self.gt.GroundTruth_field.std() + 1E-8)
@@ -251,7 +259,7 @@ class GPMultiAgent(gym.Env):
 
         done = np.mean(self.fleet.get_distances()) > self.distance_budget
 
-        return self.state, rewards, done, {}
+        return self.state, np.sum(rewards), done, {}
 
     def reset(self):
         """Resets the environment to an initial state and returns an initial
@@ -282,9 +290,14 @@ class GPMultiAgent(gym.Env):
         self.GPR.fit(self.measured_locations, self.measured_values)
         mu, lower_confidence, upper_confidence = self.GPR.predict(self.visitable_positions)
         # Reshape #
-        self.mu = mu.cpu().numpy().reshape(self.navigation_map.shape)
-        self.lower_confidence = lower_confidence.cpu().numpy().reshape(self.navigation_map.shape)
-        self.upper_confidence = upper_confidence.cpu().numpy().reshape(self.navigation_map.shape)
+        self.mu = np.zeros_like(self.navigation_map)
+        self.mu[self.visitable_positions[:,0].astype(int), self.visitable_positions[:,1].astype(int)] = mu.cpu().numpy()
+
+        self.uncertainty = np.zeros_like(self.navigation_map)
+        lower_confidence = lower_confidence.cpu().numpy()
+        upper_confidence = upper_confidence.cpu().numpy()
+        self.uncertainty[self.visitable_positions[:,0].astype(int), self.visitable_positions[:,1].astype(int)] = upper_confidence - lower_confidence
+
 
         self.state = self.render_state()
 
@@ -301,10 +314,9 @@ class GPMultiAgent(gym.Env):
                           i] = 1
 
         mean = (self.mu - self.mu.min()) / (self.mu.max() - self.mu.min() + 1E-8)
-        uncertainty = self.upper_confidence - self.lower_confidence
-        uncertainty = (uncertainty - uncertainty.min()) / (uncertainty.max() - uncertainty.min() + 1E-8)
+        uncertainty = (self.uncertainty - self.uncertainty.min()) / (self.uncertainty.max() - self.uncertainty.min() + 1E-8)
 
-        return np.dstack((nav_map, positions_map, mean, uncertainty))
+        return np.moveaxis(np.dstack((nav_map, positions_map, mean, uncertainty)), -1, 0)
 
     def render(self, mode='human'):
 
@@ -328,22 +340,28 @@ class GPMultiAgent(gym.Env):
 
         if self.fig is None:
             plt.ion()
-            self.fig, self.axs = plt.subplots(1, 3)
+            self.fig, self.axs = plt.subplots(1, 4)
 
             self.d0 = self.axs[0].imshow(self.state[:,:,0], cmap='gray_r')
             positions = self.fleet.get_positions()
             positions[:, 0], positions[:, 1] = positions[:, 1], positions[:, 0].copy()
             self.d1 = self.axs[0].scatter(positions[:,1], positions[:,0])
-            self.d2 = self.axs[1].imshow(self.state[:,:,-2], cmap = 'jet')
-            self.d3 = self.axs[2].imshow(self.state[:,:,-1], cmap = 'viridis')
+            self.d2 = self.axs[1].imshow(self.mu.reshape(self.navigation_map.shape), cmap = 'jet', vmin=self.gt.GroundTruth_field.min(), vmax = self.gt.GroundTruth_field.max())
+            true_map = np.zeros_like(self.navigation_map) * np.nan
+            true_map[self.visitable_positions[:,0].astype(int), self.visitable_positions[:,1].astype(int)] = self.gt.GroundTruth_field
+            self.d3 = self.axs[2].imshow(true_map, cmap='jet', vmin=self.gt.GroundTruth_field.min(), vmax = self.gt.GroundTruth_field.max())
+            self.d4 = self.axs[3].imshow(self.state[:,:,-1], cmap = 'viridis')
 
         else:
             self.d0.set_data(self.state[:,:,0])
             positions = self.fleet.get_positions()
             positions[:,0], positions[:,1] = positions[:,1], positions[:,0].copy()
             self.d1.set_offsets(positions)
-            self.d2.set_data(self.state[:,:,-2])
-            self.d3.set_data(self.state[:,:,-1])
+            self.d2.set_data(self.mu.reshape(self.navigation_map.shape))
+            true_map = np.zeros_like(self.navigation_map) * np.nan
+            true_map[self.visitable_positions[:, 0].astype(int), self.visitable_positions[:, 1].astype(int)] = self.gt.GroundTruth_field
+            self.d3.set_data(true_map)
+            self.d4.set_data(self.state[:,:,-1])
 
         self.fig.canvas.draw()
         plt.pause(0.1)
@@ -359,9 +377,9 @@ if __name__ == '__main__':
 
     import time
 
-    nav = np.ones((100,100))
+    nav = np.genfromtxt('example_map.csv', delimiter=',')
     n_agents = 1
-    init_pos = np.random.rand(n_agents, 2) * 100
+    init_pos = np.array([[26, 21]])
     initial_meas_locs = np.vstack((init_pos + [0,5],
                                    init_pos + [0,-5],
                                    init_pos + [5,0],
@@ -369,14 +387,14 @@ if __name__ == '__main__':
 
 
     env = GPMultiAgent(navigation_map=nav,
-                       movement_length=6,
+                       movement_length=3,
                        number_of_agents=n_agents,
                        initial_positions=init_pos,
                        initial_meas_locs=initial_meas_locs,
                        distance_budget=400,
                        device='cpu')
 
-    env.seed(42)
+    env.seed(20)
 
     T = 20
     t0 = time.time()
@@ -400,6 +418,6 @@ if __name__ == '__main__':
                     action = np.random.randint(0, 8, n_agents)
 
             print("Reward: ", r)
-            #env.render()
+            env.render()
 
     print("Tiempo medio por iteracion: ", (time.time() - t0)/T)
