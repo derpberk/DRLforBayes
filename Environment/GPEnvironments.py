@@ -35,6 +35,7 @@ class DiscreteVehicle:
             collide = False
             self.position = next_position
             self.waypoints = np.vstack((self.waypoints, [self.position]))
+            self.update_trajectory()
 
         return collide
 
@@ -48,10 +49,19 @@ class DiscreteVehicle:
 
         return False
 
+    def update_trajectory(self):
+
+        p1 = self.waypoints[-2]
+        p2 = self.waypoints[-1]
+
+        mini_traj = self.compute_trajectory_between_points(p1, p2)
+
+        self.trajectory = np.vstack((self.trajectory, mini_traj))
 
     @staticmethod
     def compute_trajectory_between_points(p1, p2):
         trajectory = None
+
 
         p = p1.astype(int)
         d = p2.astype(int) - p1.astype(int)
@@ -66,6 +76,8 @@ class DiscreteVehicle:
                 trajectory = np.vstack((trajectory, [np.rint(p)]))
 
         return trajectory.astype(int)
+
+
 
     def reset(self, initial_position):
 
@@ -111,6 +123,9 @@ class DiscreteFleet:
 
     def move(self, fleet_actions):
 
+        if isinstance(fleet_actions, int):
+            fleet_actions = np.array([fleet_actions])
+
         fleet_actions = np.array([fleet_actions.item()])
 
         collision_array = [self.vehicles[k].move(fleet_actions[k]) for k in range(self.number_of_vehicles)]
@@ -145,10 +160,11 @@ class DiscreteFleet:
 
         # Check only non redundant values #
         non_redundant_locs, non_redundant_idxs = np.unique(self.measured_locations, axis=0, return_index=True)
+        redundant_flags = len(non_redundant_locs) != len(self.measured_locations)
         self.measured_values = np.asarray(self.measured_values)[non_redundant_idxs]
         self.measured_locations = non_redundant_locs
 
-        return self.measured_values, self.measured_locations
+        return self.measured_values, self.measured_locations, redundant_flags
 
     def reset(self, initial_positions):
 
@@ -184,7 +200,7 @@ class DiscreteFleet:
 
 class GPMultiAgent(gym.Env):
 
-    def __init__(self, navigation_map, number_of_agents, initial_positions, movement_length, distance_budget, initial_meas_locs, max_number_of_collisions = 5, device =None):
+    def __init__(self, navigation_map, number_of_agents, initial_positions, movement_length, distance_budget, initial_meas_locs, number_of_actions = 8, max_number_of_collisions = 5, device =None):
 
         self.navigation_map = navigation_map
         self.visitable_positions = np.column_stack(np.where(navigation_map == 1)).astype(float)
@@ -194,13 +210,13 @@ class GPMultiAgent(gym.Env):
         self.max_number_of_collisions = max_number_of_collisions
 
         self.observation_space = gym.spaces.Box(0.0,1.0, shape= (3 + self.number_of_agents, self.navigation_map.shape[0], self.navigation_map.shape[1]))
-        self.action_space = gym.spaces.Discrete(8)
+        self.action_space = gym.spaces.Discrete(number_of_actions)
 
         self.state = None
         self.initial_meas_locs = initial_meas_locs
 
         self.fleet = DiscreteFleet(number_of_vehicles=number_of_agents,
-                                   n_actions=8,
+                                   n_actions=number_of_actions,
                                    initial_positions=initial_positions,
                                    movement_length=movement_length,
                                    navigation_map=navigation_map)
@@ -212,8 +228,14 @@ class GPMultiAgent(gym.Env):
         self.upper_confidence = None
         self.GPR = GaussianProcessRegressorPytorch(training_iter=100, device=device)
         self.fig = None
-
+        self.mse = None
         self.gt = ShekelGT(self.navigation_map.shape, self.visitable_positions)
+
+    def valid_action(self, a):
+        assert self.number_of_agents == 1, "Not implemented for Multi-Agent!"
+
+        # Return the action valid flag #
+        return not self.fleet.check_collisions([a])[0]
 
     def step(self, action):
         """Run one timestep of the environment's dynamics. When end of
@@ -237,8 +259,7 @@ class GPMultiAgent(gym.Env):
 
         if not all(collision_array):
 
-
-            self.measured_values, self.measured_locations = self.fleet.measure(gt=self.gt)
+            self.measured_values, self.measured_locations, redundant = self.fleet.measure(gt=self.gt)
             # Predict the new model #
             self.GPR.fit(self.measured_locations, self.measured_values)
             mu, lower_confidence, upper_confidence = self.GPR.predict(self.visitable_positions)
@@ -252,13 +273,16 @@ class GPMultiAgent(gym.Env):
 
             self.uncertainty[self.visitable_positions[:,0].astype(int), self.visitable_positions[:,1].astype(int)] = upper_confidence - lower_confidence
 
-            normalized_gt = (self.gt.GroundTruth_field - self.gt.GroundTruth_field.mean())/(self.gt.GroundTruth_field.std() + 1E-8)
-            normalized_predicted_gt = (mu.cpu().numpy() - self.gt.GroundTruth_field.mean())/(self.gt.GroundTruth_field.std() + 1E-8)
-            mse = MSE(y_true = normalized_gt, y_pred=normalized_predicted_gt)
-            reward = -mse
+            if not redundant:
+                normalized_gt = (self.gt.GroundTruth_field - self.gt.GroundTruth_field.mean())/(self.gt.GroundTruth_field.std() + 1E-8)
+                normalized_predicted_gt = (mu.cpu().numpy() - self.gt.GroundTruth_field.mean())/(self.gt.GroundTruth_field.std() + 1E-8)
+                self.mse = MSE(y_true = normalized_gt, y_pred=normalized_predicted_gt, squared = False)
+                reward = -self.mse
+            else:
+                reward = -1.0
 
         else:
-            reward = -5
+            reward = -5.0
 
         self.state = self.render_state()
 
@@ -286,7 +310,7 @@ class GPMultiAgent(gym.Env):
         self.gt.reset()
 
         # Take measurements
-        self.measured_values, self.measured_locations = self.fleet.measure(gt=self.gt)
+        self.measured_values, self.measured_locations, _ = self.fleet.measure(gt=self.gt)
 
         if self.initial_meas_locs is not None:
             self.fleet.measure(gt=self.gt, extra_positions = self.initial_meas_locs)
@@ -303,6 +327,11 @@ class GPMultiAgent(gym.Env):
         upper_confidence = upper_confidence.cpu().numpy()
         self.uncertainty[self.visitable_positions[:,0].astype(int), self.visitable_positions[:,1].astype(int)] = upper_confidence - lower_confidence
 
+        normalized_gt = (self.gt.GroundTruth_field - self.gt.GroundTruth_field.mean()) / (
+                    self.gt.GroundTruth_field.std() + 1E-8)
+        normalized_predicted_gt = (mu.cpu().numpy() - self.gt.GroundTruth_field.mean()) / (
+                    self.gt.GroundTruth_field.std() + 1E-8)
+        self.mse = MSE(y_true=normalized_gt, y_pred=normalized_predicted_gt, squared = False)
 
         self.state = self.render_state()
 
@@ -311,17 +340,20 @@ class GPMultiAgent(gym.Env):
     def render_state(self):
 
         nav_map = np.copy(self.navigation_map)
-        positions_map = np.zeros(shape=(self.navigation_map.shape[0], self.navigation_map.shape[1], self.number_of_agents))
+        positions_map = np.zeros(shape=(self.number_of_agents, self.navigation_map.shape[0], self.navigation_map.shape[1]))
 
-        for i in range(self.number_of_agents):
-            positions_map[self.fleet.vehicles[i].position[0].astype(int),
-                          self.fleet.vehicles[i].position[1].astype(int),
-                          i] = 1
+        for k in range(self.number_of_agents):
+            if len(self.fleet.vehicles[k].trajectory) > 1:
+                w = np.linspace(0, 1, len(self.fleet.vehicles[k].trajectory))
+            else:
+                w = 1.0
+
+            positions_map[k, self.fleet.vehicles[k].trajectory[:, 0], self.fleet.vehicles[k].trajectory[:, 1]] = w
 
         mean = (self.mu - self.mu.min()) / (self.mu.max() - self.mu.min() + 1E-8)
         uncertainty = (self.uncertainty - self.uncertainty.min()) / (self.uncertainty.max() - self.uncertainty.min() + 1E-8)
 
-        return np.moveaxis(np.dstack((nav_map, positions_map, mean, uncertainty)), -1, 0)
+        return np.concatenate((nav_map[np.newaxis], positions_map, mean[np.newaxis], uncertainty[np.newaxis]))
 
     def render(self, mode='human'):
 
@@ -347,7 +379,7 @@ class GPMultiAgent(gym.Env):
             plt.ion()
             self.fig, self.axs = plt.subplots(1, 4)
 
-            self.d0 = self.axs[0].imshow(self.state[0,:,:], cmap='gray_r')
+            self.d0 = self.axs[0].imshow(self.state[1,:,:], cmap='gray')
             positions = self.fleet.get_positions()
             positions[:, 0], positions[:, 1] = positions[:, 1], positions[:, 0].copy()
             self.d1 = self.axs[0].scatter(positions[:,1], positions[:,0])
@@ -358,7 +390,7 @@ class GPMultiAgent(gym.Env):
             self.d4 = self.axs[3].imshow(self.state[-1,:,:], cmap = 'viridis')
 
         else:
-            self.d0.set_data(self.state[0,:,:])
+            self.d0.set_data(self.state[1,:,:])
             positions = self.fleet.get_positions()
             positions[:,0], positions[:,1] = positions[:,1], positions[:,0].copy()
             self.d1.set_offsets(positions)
@@ -371,6 +403,8 @@ class GPMultiAgent(gym.Env):
         self.fig.canvas.draw()
         plt.pause(0.1)
 
+
+
     def seed(self, seed=None):
 
         np.random.seed(seed)
@@ -382,7 +416,7 @@ if __name__ == '__main__':
 
     import time
 
-    nav = np.genfromtxt('example_map.csv', delimiter=',')
+    nav = np.genfromtxt('ypacarai_map.csv')
     n_agents = 1
     init_pos = np.array([[26, 21]])
     initial_meas_locs = np.vstack((init_pos + [0,5],
@@ -392,7 +426,7 @@ if __name__ == '__main__':
 
 
     env = GPMultiAgent(navigation_map=nav,
-                       movement_length=3,
+                       movement_length=10,
                        number_of_agents=n_agents,
                        initial_positions=init_pos,
                        initial_meas_locs=initial_meas_locs,
@@ -415,7 +449,7 @@ if __name__ == '__main__':
 
         while not d:
 
-            s, r, d, _ = env.step(action)
+            s, r, d, _ = env.step(env.action_space.sample())
 
             if any(env.fleet.check_collisions(action)):
                 action = np.random.randint(0, 8, n_agents)

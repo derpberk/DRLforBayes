@@ -354,6 +354,7 @@ class DuelingDQNAgent:
 
 		self.writer.add_scalar('train/accumulated_reward', self.episodic_reward, self.episode)
 		self.writer.add_scalar('train/accumulated_length', self.episodic_length, self.episode)
+		self.writer.add_scalar('train/Final_MSE', self.env.mse, self.episode)
 
 		self.writer.flush()
 
