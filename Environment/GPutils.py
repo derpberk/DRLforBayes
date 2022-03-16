@@ -11,6 +11,7 @@ class ExactGPModel(gpytorch.models.ExactGP):
         self.mean_module = gpytorch.means.ConstantMean()
         self.covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.RBFKernel())
         self.covar_module.base_kernel.lengthscale = lengthscale
+        self.num_outputs = 1
 
     def forward(self, x):
         mean_x = self.mean_module(x)

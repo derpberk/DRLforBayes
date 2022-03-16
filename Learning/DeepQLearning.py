@@ -4,7 +4,7 @@ from DeepAgent.Agent.DuelingDQNAgent import DuelingDQNAgent
 
 nav = np.genfromtxt('../Environment/example_map.csv', delimiter=',')
 n_agents = 1
-init_pos = np.array([[26, 21]])
+init_pos = np.array([[66, 74]])
 initial_meas_locs = np.vstack((init_pos + [0, 3],
                                init_pos + [0, -3],
                                init_pos + [3, 0],

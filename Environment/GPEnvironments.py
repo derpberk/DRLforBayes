@@ -418,11 +418,11 @@ if __name__ == '__main__':
 
     nav = np.genfromtxt('ypacarai_map.csv')
     n_agents = 1
-    init_pos = np.array([[26, 21]])
-    initial_meas_locs = np.vstack((init_pos + [0,5],
-                                   init_pos + [0,-5],
-                                   init_pos + [5,0],
-                                   init_pos + [-5,0]))
+    init_pos = np.array([[66, 74]])
+    initial_meas_locs = np.vstack((init_pos + [0,3],
+                                   init_pos + [0,-3],
+                                   init_pos + [3,0],
+                                   init_pos + [-3,0]))
 
 
     env = GPMultiAgent(navigation_map=nav,
