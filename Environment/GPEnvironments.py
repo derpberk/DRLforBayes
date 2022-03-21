@@ -280,9 +280,13 @@ class GPMultiAgent(gym.Env):
 
             self.mse = MSE(y_true = normalized_gt, y_pred=normalized_predicted_gt, squared = False)
 
-            reward = np.abs(self._mse - self.mse)/self.normalization_value
+            reward = np.clip((self._mse - self.mse)/self.normalization_value, 0, 1.0)
 
+            print("RMSE: ", self.mse)
+            print("RMSE_ant: ", self._mse)
             self._mse = self.mse
+
+
 
         else:
             reward = -1.0
