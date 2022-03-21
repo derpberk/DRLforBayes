@@ -229,6 +229,7 @@ class GPMultiAgent(gym.Env):
         self.GPR = GaussianProcessRegressorPytorch(training_iter=100, device=device)
         self.fig = None
         self.mse = None
+        self._mse = None
         self.gt = ShekelGT(self.navigation_map.shape, self.visitable_positions)
 
     def valid_action(self, a):
@@ -273,16 +274,18 @@ class GPMultiAgent(gym.Env):
 
             self.uncertainty[self.visitable_positions[:,0].astype(int), self.visitable_positions[:,1].astype(int)] = upper_confidence - lower_confidence
 
-            if not redundant:
-                normalized_gt = (self.gt.GroundTruth_field - self.gt.GroundTruth_field.mean())/(self.gt.GroundTruth_field.std() + 1E-8)
-                normalized_predicted_gt = (mu.cpu().numpy() - self.gt.GroundTruth_field.mean())/(self.gt.GroundTruth_field.std() + 1E-8)
-                self.mse = MSE(y_true = normalized_gt, y_pred=normalized_predicted_gt, squared = False)
-                reward = -self.mse
-            else:
-                reward = -1.0
+
+            normalized_gt = (self.gt.GroundTruth_field - self.gt.GroundTruth_field.mean())/(self.gt.GroundTruth_field.std() + 1E-8)
+            normalized_predicted_gt = (mu.cpu().numpy() - self.gt.GroundTruth_field.mean())/(self.gt.GroundTruth_field.std() + 1E-8)
+
+            self.mse = MSE(y_true = normalized_gt, y_pred=normalized_predicted_gt, squared = False)
+
+            reward = np.abs(self._mse - self.mse)/self.normalization_value
+
+            self._mse = self.mse
 
         else:
-            reward = -5.0
+            reward = -1.0
 
         self.state = self.render_state()
 
@@ -331,7 +334,11 @@ class GPMultiAgent(gym.Env):
                     self.gt.GroundTruth_field.std() + 1E-8)
         normalized_predicted_gt = (mu.cpu().numpy() - self.gt.GroundTruth_field.mean()) / (
                     self.gt.GroundTruth_field.std() + 1E-8)
+
         self.mse = MSE(y_true=normalized_gt, y_pred=normalized_predicted_gt, squared = False)
+        self._mse = self.mse
+
+        self.normalization_value = self.mse
 
         self.state = self.render_state()
 
